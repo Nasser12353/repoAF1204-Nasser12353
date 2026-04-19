@@ -16,16 +16,6 @@ app = marimo.App()
 
 
 @app.cell
-def _(mo):
-    mo.md(r"""
-    ---
-    ## 🎓 Personal Portfolio Webpage
-    Combine everything learned so far (e.g., data loading, preparation, and visualization) into a multi-tabbed webpage featuring interactive chart and dashboard
-    """)
-    return
-
-
-@app.cell
 def _():
     import marimo as mo
     import pandas as pd
