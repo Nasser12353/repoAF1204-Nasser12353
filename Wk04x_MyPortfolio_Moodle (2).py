@@ -27,13 +27,9 @@ def _(mo):
 
 @app.cell
 def _():
-
     import marimo as mo
     import pandas as pd
-
-    # Require micropip to install packages in the WASM environment
     import micropip
-
     return micropip, mo, pd
 
 
@@ -41,275 +37,272 @@ def _():
 def _(pd):
     # 1: Setup & Data Prep
 
-    # Get data ready for the dynamic webpage
-
-    # Note: The local-data-loading approach below does not work due to GitHub Pages compression issue
-    #===============================================================================================
-    # Must place data file in subfolder 'public' of the folder where the marimo notebook is located
-    # (required to locate and include the data when exporting as html-wasm)
-    # 
-    #filename = mo.notebook_location() / "public" / 'sp500_ZScore_AvgCostofDebt.csv'
-    #df_final = pd.read_csv(str(filename))
-
-    # Instead, use a raw gist URL approach to remotely load the data (already hosted online)  
-    #=======================================================================================
     csv_url = "https://gist.githubusercontent.com/DrAYim/80393243abdbb4bfe3b45fef58e8d3c8/raw/ed5cfd9f210bf80cb59a5f420bf8f2b88a9c2dcd/sp500_ZScore_AvgCostofDebt.csv"
 
-    df_final = pd.read_csv(csv_url)  # as opposed to pd.read_csv('public/sp500_ZScore_AvgCostofDebt.csv')
+    df_final = pd.read_csv(csv_url)
 
     df_final = df_final.dropna(subset=['AvgCost_of_Debt', 'Z_Score_lag', 'Sector_Key'])
-    # Filter outliers to reduce distortion in visualizations
-    df_final = df_final[(df_final['AvgCost_of_Debt'] < 5)]   # 5 means 500%
-    #df_final = df_final[(df_final['AvgCost_of_Debt'] > 0) & (df_final['Z_Score_lag'] < 20)]
+    df_final = df_final[(df_final['AvgCost_of_Debt'] < 5)]
     df_final['Debt_Cost_Percent'] = df_final['AvgCost_of_Debt'] * 100
+    df_final['Market_Cap_B'] = df_final['Market_Cap'] / 1e9
     return (df_final,)
 
 
 @app.cell
 def _(df_final, mo):
-    # 2: Define the UI Controls (The "Inputs")
+    # 2: Define the UI Controls
 
-    # create the widgets here. In marimo, assigning them to a variable makes them available globally.
-
-    # 1. A Dropdown to select Sectors
     all_sectors = sorted(df_final['Sector_Key'].unique().tolist())
     sector_dropdown = mo.ui.multiselect(
         options=all_sectors,
-        value=all_sectors[:3], # Default to first 3
+        value=all_sectors[:5],
         label="Filter by Sector",
-        )
-
-    # 2. A Slider for Market Cap (Size of company)
-    # Convert Market Cap to Billions for easier reading
-    df_final['Market_Cap_B'] = df_final['Market_Cap'] / 1e9
-    max_cap = int(df_final['Market_Cap_B'].max())
+    )
 
     cap_slider = mo.ui.slider(
-        start=0, 
-        stop=200,   # int(0.05*max_cap), 
-        step=10, 
-        value=0, # initial value
+        start=0,
+        stop=200,
+        step=10,
+        value=0,
         label="Min Market Cap ($ Billions)"
-        )
+    )
     return cap_slider, sector_dropdown
 
 
 @app.cell
 def _(cap_slider, df_final, sector_dropdown):
-    # 3: The Filter Logic (Reactive Data)
+    # 3: Reactive Filter Logic
 
-    # This cell re-runs automatically when the user changes the slider or dropdown
-
-    # Filter the dataframe based on the UI inputs
     filtered_portfolio = df_final[
         (df_final['Sector_Key'].isin(sector_dropdown.value)) &
         (df_final['Market_Cap_B'] >= cap_slider.value)
-        ]
+    ]
 
-    # Calculate a quick summary metric
     count = len(filtered_portfolio)
     return count, filtered_portfolio
 
 
 @app.cell
 async def _(micropip):
-    # Await installation of plotly in the WASM environment
-    await micropip.install('plotly');
-
-    # What does await do here? 
-    # It pauses execution of the code until the package is installed, 
-    # considering that installing a package is an asynchronous operation 
-    # (which means taking some time to complete)
-
+    await micropip.install('plotly')
     import plotly.express as px
-
     return (px,)
 
 
 @app.cell
-def _(count, filtered_portfolio, mo, pd, px):
-    # 4: The Visualizations
+def _(cap_slider, count, filtered_portfolio, mo, pd, px, sector_dropdown):
+    # 4: Visualizations
 
-    # Create the plots based on the filtered data.
+    # =============================================
+    # Plot 1: Treemap — Market Cap weighted by Cost of Debt
+    # =============================================
 
-    #=========================================
-    # Plot 1: The Financial Analysis (Scatter)
-    #=========================================
-    fig_portfolio = px.scatter(
-        filtered_portfolio,
-        x='Z_Score_lag', 
-        y='Debt_Cost_Percent',
-        color='Sector_Key',
-        size='Market_Cap_B',
-        hover_name='Name',
-        title=f"Cost of Debt vs. Z-Score ({count} observations)",
-        labels={'Z_Score_lag': 'Altman Z-Score (lagged)', 'Debt_Cost_Percent': 'Avg. Cost of Debt (%)'},
-        # template='presentation' gives a clean look with larger fonts
-        template='presentation',    # 'presentation' # plotly_white  # 'plotly' (default) 
-        width=900,
-        height=600
-        )
+    # Filter out rows with zero/missing Market Cap for a clean treemap
+    df_treemap = filtered_portfolio[filtered_portfolio['Market_Cap_B'] > 0].copy()
 
-    # Add a vertical line for the "Distress" threshold (1.81)
-    fig_portfolio.add_vline(x=1.81, line_dash="dash", line_color="red", 
-        annotation=dict(
-            text="Distress Threshold (Z-Score = 1.81)",
-            font=dict(color="red"),
-            x=1.5, xref="x",
-            # x is interpreted in the x-axis data coordinates (or category label)
-            y=1.07, yref="paper",
-            # y is interpreted as a fraction of the plotting area (0 = bottom, 1 = top).
-            showarrow=False,
-            yanchor="top"
-            ) 
-        )
-
-    # Add a vertical line for the "Safe" threshold (2.99)
-    fig_portfolio.add_vline(x=2.99, line_dash="dash", line_color="green", 
-        annotation=dict(
-            text="Safe Threshold (Z-Score = 2.99)",
-            font=dict(color="green"),
-            x=3.10, xref="x",
-            y=1.02, yref="paper",
-            showarrow=False,
-            yanchor="top"
-            ) 
-        )
-
-
-    # #==============================================
-    # # Calculate regression line points
-    # import numpy as np
-    # # use the same dataframe used for the scatter (filtered_portfolio) and plotted y (Debt_Cost_Percent)
-    # #   after filtering out extreme outliers (with Debt_Cost_Percent >= 5, i.e., 500%)
-    # df_regline = filtered_portfolio[
-    #    (filtered_portfolio['Debt_Cost_Percent'] < 5) # Assuming decimal format (0.15 = 15%)
-    #    ]
-    # 
-    # # Only calculate regression if there are data points
-    # if not df_regline.empty:
-    #     x = df_regline['Z_Score_lag'].astype(float)
-    #     y = df_regline['Debt_Cost_Percent'].astype(float)
-
-    #     # get slope & intercept of the regression line
-    #     slope, intercept = np.polyfit(x, y, 1)
-
-    #     # create x-range for a smooth line
-    #     x_line = np.linspace(x.min(), x.max(), 100)
-    #     y_line = intercept + slope * x_line
-
-    #     # add regression line to existing fig
-    #     line_trace = px.line(x=x_line, y=y_line#, labels={'x':'Z_Score_lag','y':'Debt_Cost_Percent'}
-    #     ).data[0]
-    #     line_trace.update(line=dict(width=0.5, color='black'))
-
-    #     fig_portfolio.add_trace(line_trace)
-    # #==============================================
-
-    # Wrap the plot in a marimo UI element
-    chart_element = mo.ui.plotly(fig_portfolio)
-
-
-    #=========================================
-    # Plot 2: Personal Travel Map (Hardcoded demo data for the 'Hobbies' tab)
-    #=========================================
-    # This simulates travel history data  
-    travel_data = pd.DataFrame({
-        'City': ['London', 'New York', 'Tokyo', 'Sydney', 'Paris'],
-        'Lat': [51.5, 40.7, 35.6, -33.8, 48.8],
-        'Lon': [-0.1, -74.0, 139.6, 151.2, 2.3],
-        'Visit_Year_str': ['2022', '2023', '2024', '2021', '2023']
-    })
-
-    years = sorted(travel_data['Visit_Year_str'].unique(), key=int)  # -> ['2021','2022','2023','2024']
-
-    fig_travel = px.scatter_geo(
-        travel_data,
-        lat='Lat', lon='Lon',
-        hover_name='City',
-        color='Visit_Year_str',
-        category_orders={'Visit_Year_str': years},
-        color_discrete_sequence=px.colors.qualitative.Plotly,
-        projection="natural earth",
-        title="My Travel Footprint",
-        #template='plotly_white',
-        labels={'Visit_Year_str': 'Visit Year'}
+    fig_treemap = px.treemap(
+        df_treemap,
+        path=['Sector_Key', 'Name'],
+        values='Market_Cap_B',
+        color='Debt_Cost_Percent',
+        color_continuous_scale='RdYlGn_r',   # Red = expensive debt, Green = cheap debt
+        color_continuous_midpoint=df_treemap['Debt_Cost_Percent'].median(),
+        title=f"S&P 500 Market Cap — Coloured by Avg. Cost of Debt (%) | {count} companies",
+        labels={
+            'Market_Cap_B': 'Market Cap ($B)',
+            'Debt_Cost_Percent': 'Avg. Cost of Debt (%)'
+        },
+        template='presentation',
+        width=950,
+        height=620,
     )
 
-    fig_travel.update_traces(marker=dict(size=12)); # use trailing semicolon to suppress output
-    return chart_element, fig_travel
+    fig_treemap.update_traces(
+        textinfo="label+value",
+        hovertemplate=(
+            "<b>%{label}</b><br>"
+            "Market Cap: $%{value:.1f}B<br>"
+            "Avg. Cost of Debt: %{color:.2f}%<extra></extra>"
+        )
+    )
+
+    fig_treemap.update_layout(
+        coloraxis_colorbar=dict(title="Cost of<br>Debt (%)")
+    )
+
+    treemap_element = mo.ui.plotly(fig_treemap)
+
+    # =============================================
+    # Plot 2: Fitness — Weekly Running Distance Line Chart
+    # =============================================
+
+    # Mock data: weekly running distance (km) over 52 weeks, split by activity type
+    import numpy as np
+    rng = np.random.default_rng(42)
+
+    weeks = list(range(1, 53))
+
+    # Simulate realistic training: easy runs ~5km, long runs ~10km, rest weeks dip
+    easy_base   = 5  + rng.normal(0, 0.8, 52)
+    long_base   = 10 + rng.normal(0, 1.2, 52)
+    interval_base = 7 + rng.normal(0, 1.0, 52)
+
+    # Add a "peak season" ramp-up around weeks 20-35 (pre-season football)
+    season_boost = np.where((np.array(weeks) >= 20) & (np.array(weeks) <= 35), 2.5, 0)
+
+    df_fitness = pd.DataFrame({
+        'Week': weeks * 3,
+        'Distance_km': np.concatenate([
+            np.clip(easy_base + season_boost, 2, 15),
+            np.clip(long_base + season_boost, 5, 18),
+            np.clip(interval_base + season_boost, 4, 14),
+        ]),
+        'Activity': ['Easy Run'] * 52 + ['Long Run'] * 52 + ['Interval / Speed'] * 52
+    })
+
+    fig_fitness = px.line(
+        df_fitness,
+        x='Week',
+        y='Distance_km',
+        color='Activity',
+        markers=True,
+        title='Weekly Running Distance by Training Type (2024–25)',
+        labels={'Distance_km': 'Distance (km)', 'Week': 'Week of Year'},
+        template='presentation',
+        width=950,
+        height=550,
+        color_discrete_map={
+            'Easy Run':         '#3A86FF',
+            'Long Run':         '#FF006E',
+            'Interval / Speed': '#FB5607',
+        }
+    )
+
+    fig_fitness.add_vrect(
+        x0=20, x1=35,
+        fillcolor='rgba(255,165,0,0.12)',
+        layer='below',
+        line_width=0,
+        annotation_text="Pre-season block",
+        annotation_position="top left",
+        annotation_font_size=12,
+        annotation_font_color="darkorange"
+    )
+
+    fig_fitness.update_traces(marker=dict(size=4), line=dict(width=2))
+    fig_fitness.update_layout(legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1))
+
+    fitness_element = mo.ui.plotly(fig_fitness)
+
+    return cap_slider, count, df_treemap, df_fitness, fig_fitness, fig_treemap, fitness_element, sector_dropdown, treemap_element
 
 
 @app.cell
-def _(cap_slider, chart_element, fig_travel, mo, sector_dropdown):
-    # 5: The "Portfolio" Layout (a Multi-Tab Webpage)
+def _(cap_slider, fitness_element, mo, sector_dropdown, treemap_element):
+    # 5: Define Tab Content
 
-    # Combine everything into a polished, tabbed interface using Markdown and mo.ui.tabs.
-
-    # Define the content for each tab
-
-    # --- Tab 1: CV / Profile ---
-    # Using standard Markdown for formatting
+    # ─── Tab 1: About Me ───
     tab_cv = mo.md(
         """
-        ### Aspiring Financial Analyst | Data Science Enthusiast
+        ### Aspiring Financial Analyst | Python & Data Enthusiast
 
-        **Summary:**
-        - Passionate about uncovering market insights using modern data tools like Python, Marimo, and Plotly. 
-        - Eager to apply analytical skills to real-world financial challenges.
+        **Summary**
 
-        **Education:**
-        *   **BSc Accounting & Finance**, Bayes Business School (2025 - Present)
-        *   *Relevant Modules:* Introduction to Data Science and AI Tools, Financial Accounting.
+        BSc Accounting and Finance student at Bayes Business School, City, University of London, 
+        with hands-on experience in investment analysis and financial modelling gained at the 
+        Qatar Investment Authority. Strong foundation in Python, Excel, and quantitative methods; 
+        passionate about applying data science tools to real-world finance problems.
 
-        **Skills:**
-        *   🐍 Python Programming
-        *   📊 Data Visualization
-        *   📉 Financial Modeling
+        ---
+
+        **Education**
+
+        🏛️ **BSc Accounting and Finance** — Bayes Business School, City, University of London *(Sept 2025 – June 2028)*
+
+        - *Financial Accounting (1st)* — financial statements, IFRS principles, valuation adjustments  
+        - *Financial Institutions (1st)* — banks, central banks, regulation, financial instruments
+
+        🏫 **Sherborne School** *(Sept 2012 – June 2024)*
+
+        - A-Levels: Arabic, English General, Travel & Tourism  
+        - IGCSEs: Maths, ICT, English, Travel & Tourism
+
+        ---
+
+        **Experience**
+
+        💼 **Finance Intern — Qatar Investment Authority (QIA)** *(June – August 2024)*
+
+        - Analysed financial statements and prepared ratio analysis summaries for potential portfolio companies  
+        - Gathered market data, compared asset performance, and helped draft investment memos  
+        - Built Excel valuation models (DCF and comparables) alongside senior analysts
+
+        📊 **Treasurer — Business & Finance Society, Sherborne School** *(Sept 2022 – June 2023)*
+
+        - Managed the society's annual budget, tracked expenses, and oversaw event payments  
+        - Planned cash-flow for competitions and workshops; gained budgeting and forecasting experience
+
+        ---
+
+        **Skills**
+
+        - 🐍 Python (Pandas, NumPy, Plotly, Marimo)  
+        - 📊 Advanced Excel (pivot tables, VLOOKUP/XLOOKUP, DCF modelling)  
+        - 🗄️ SQL (basic queries) · R (basic)  
+        - 📑 Financial Statement Analysis · Ratio Analysis · Valuation (DCF, Comparables)
         """
-        )
+    )
 
-
-    # --- Tab 2: The Interactive Analysis (Inputs + Plot) ---
-    # Vertically stack the inputs and the chart
+    # ─── Tab 2: Passion Projects ───
     tab_data_content = mo.vstack([
-        mo.md("## 📊 Interactive Credit Risk Analyzer"),
-        # create an informational callout box with the instruction text inside
-        mo.callout(mo.md("Use the filters below to explore the relationship between Borrowing Costs and Credit Risk."), kind="info"),
-        # horizontally arrange two UI elements (sector_dropdown and cap_slider) in a row.
+        mo.md("## 📊 Interactive Credit Risk Analyser"),
+        mo.callout(
+            mo.md(
+                "**Treemap View:** Box size = Market Cap · Colour = Avg. Cost of Debt (%)  \n"
+                "Red = more expensive debt · Green = cheaper debt. Use filters to explore sectors."
+            ),
+            kind="info"
+        ),
         mo.hstack([sector_dropdown, cap_slider], justify="center", gap=2),
-        chart_element
-        ])
+        treemap_element,
+    ])
 
-
-    # --- Tab 3: Hobbies & Interests ---
-    # Combining text and the travel map
+    # ─── Tab 3: Hobbies ───
     tab_personal = mo.vstack([
-        mo.md("## 🌍 My Hobbies: Travel & Photography"),
-        mo.md("When I'm not analyzing company financials, I love exploring the world."),
-        mo.ui.plotly(fig_travel)
-        ])
+        mo.md("## 🏃 My Hobby: Football & Running"),
+        mo.callout(
+            mo.md(
+                "I played in the school football team and keep fit year-round with structured running.  \n"
+                "The chart below tracks weekly distances across three session types.  \n"
+                "The **orange shaded region** marks the pre-season training block (weeks 20–35)."
+            ),
+            kind="success"
+        ),
+        fitness_element,
+    ])
+
     return tab_cv, tab_data_content, tab_personal
 
 
 @app.cell
 def _(mo, tab_cv, tab_data_content, tab_personal):
-    # 6: Assemble and display the multi-tab webpage
+    # 6: Assemble the Portfolio
 
-    # Create the clickable menu of tabs and assign contents defined above to each tab
     app_tabs = mo.ui.tabs({
-        "📄 About Me": tab_cv,
-        "📊 Passion Projects": tab_data_content, 
-        "✈️ Personal Interests": tab_personal
-        })
+        "📄 About Me":          tab_cv,
+        "📊 Passion Projects":  tab_data_content,
+        "🏃 Fitness & Sport":   tab_personal,
+    })
 
-    # Display the final app
     mo.md(
         f"""
-        # **Jane Doe** 
+        # **Nasser Al-Thani**
+        *BSc Accounting & Finance · Bayes Business School · nasser.al-thani.6@bayes.city.ac.uk*
+
         ---
         {app_tabs}
-        """)
+        """
+    )
     return
 
 
